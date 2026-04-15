@@ -46,6 +46,7 @@ ament_python_install_package(${PROJECT_NAME})
 # Install Python executables
 install(PROGRAMS
   scripts/detect3d.py
+  scripts/vision/detections.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
