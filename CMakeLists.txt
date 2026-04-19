@@ -44,7 +44,7 @@ include_directories(include)
 # ── Tracker library: filter + track + node (everything except main) ───────────
 add_library(tracker_lib STATIC
     src/multi_tracker.cpp
-    src/kalman_filter_3d.cpp
+    src/kalman_filter.cpp
     src/tracker_node.cpp
 )
 

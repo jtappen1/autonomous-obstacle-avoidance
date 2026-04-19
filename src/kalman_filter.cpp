@@ -1,4 +1,4 @@
-#include "final_project/tracker/kalman_filter_3d.hpp"
+#include "final_project/tracker/kalman_filter.hpp"
 #include <cmath>
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -46,9 +46,6 @@ KalmanFilter3D::Mat6 KalmanFilter3D::buildQ(double dt, double sigma_a)
     const double dt3 = dt2 * dt;
     const double dt4 = dt3 * dt;
 
-    // 1-D process noise block
-    //  [dt4/4  dt3/2]
-    //  [dt3/2  dt2  ]
     const double q00 = dt4 / 4.0 * q;
     const double q01 = dt3 / 2.0 * q;
     const double q11 = dt2       * q;
@@ -57,26 +54,23 @@ KalmanFilter3D::Mat6 KalmanFilter3D::buildQ(double dt, double sigma_a)
     for (int i = 0; i < 3; ++i) {
         Q(i,   i  ) = q00;
         Q(i,   i+3) = q01;
-        Q(i+3, i  ) = q01;   // symmetric
+        Q(i+3, i  ) = q01;
         Q(i+3, i+3) = q11;
     }
     return Q;
 }
-// ─────────────────────────────────────────────────────────────────────────────
 KalmanFilter3D::Mat3 KalmanFilter3D::innovationCovariance() const {
     Mat3 S = H_ * P_ * H_.transpose() + R_;
     S += 1e-6 * Mat3::Identity();
     return S;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 void KalmanFilter3D::predict()
 {
     x_ = F_ * x_;
     P_ = F_ * P_ * F_.transpose() + Q_;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 void KalmanFilter3D::update(const Vec3& z)
 {
     // Innovation
@@ -91,9 +85,9 @@ void KalmanFilter3D::update(const Vec3& z)
     // State update
     x_ += K * y;
 
-    // Joseph-form covariance update (numerically stable)
+    // Joseph-form covariance update
     const Mat6 I_KH = Mat6::Identity() - K * H_;
     P_ = I_KH * P_ * I_KH.transpose() + K * R_ * K.transpose();
 
-    
+
 }

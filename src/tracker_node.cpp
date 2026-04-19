@@ -52,9 +52,7 @@ void TrackerNode::infoCb(
 void TrackerNode::depthCb(
     const sensor_msgs::msg::Image::ConstSharedPtr& msg)
 {
-    // Convert once — keep a local copy to avoid holding the mutex during decode.
-    // Use the message's own encoding rather than "passthrough" (not supported on
-    // all cv_bridge builds). RealSense aligned depth is typically "16UC1".
+    
     cv::Mat depth;
     try {
         depth = cv_bridge::toCvCopy(msg, msg->encoding)->image;
@@ -63,8 +61,7 @@ void TrackerNode::depthCb(
         return;
     }
 
-    // Ensure the mat is 16-bit unsigned (millimetres) as the rest of the code
-    // expects. Convert if the camera publishes 32FC1 (metres) instead.
+    // Ensure the mat is 16-bit unsigned
     if (depth.type() == CV_32FC1) {
         depth.convertTo(depth, CV_16UC1, 1000.0);  // m → mm
     }

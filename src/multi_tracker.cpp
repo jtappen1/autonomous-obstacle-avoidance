@@ -4,7 +4,9 @@
 
 MultiTracker3D::MultiTracker3D(double dt) : dt_(dt) {}
 
-// ─────────────────────────────────────────────────────────────────────────────
+/**
+Creates new traj trackers if the current measurement does not match to any existing trackers
+*/
 void MultiTracker3D::spawn(const Eigen::Vector3d& measurement){
     Trajectory t;
     t.r.id = next_id_++;
@@ -14,18 +16,23 @@ void MultiTracker3D::spawn(const Eigen::Vector3d& measurement){
     traj_.push_back(std::move(t));
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+/**
+Matches measurements to trackers, optionally spawning new trackers if the Mahalanobis distance is too far away.
+Mahalanobis distance is a way of measuring how far a measurement is from a prediction whiel taking uncertainty into account.
+d^2 = (z - \hat(z)).T * S^-1 (z - /hat(z)), essentially the residual x innovation covariance x residual.
+*/
 StepResult MultiTracker3D::step(const std::vector<Eigen::Vector3d>& measurements){
-    // ── Predict ──────────────────────────────────────────────────────────
+
+    // Predict Step
     for(auto& t: traj_) {
         t.kf->predict();
         t.age++;
     }
 
-   
     std::vector<bool> matched(traj_.size(), false);
     std::vector<Eigen::Vector3d> unmatched_measurements;
 
+    // Matching and Mahalanobis distance
     for(size_t z_idx = 0; z_idx < measurements.size(); ++z_idx){
         const auto& z = measurements[z_idx];
         double best_dist = gating_threshold_;
@@ -54,17 +61,18 @@ StepResult MultiTracker3D::step(const std::vector<Eigen::Vector3d>& measurements
         }
     }
 
+    // Update state traj
     for(int i = 0; i < static_cast<int>(traj_.size()); i++){
         if(!matched[i]) {
             traj_[i].missed++;
         }
     }
 
-    // ── Spawn deferred new tracks ─────────────────────────────────────────
+    // Create new trackers 
     for(const auto& z : unmatched_measurements)
         spawn(z);
 
-    // ── Prune dead tracks ─────────────────────────────────────────────────
+    // Prune dead trackers
     std::vector<int> dead_ids;
     for (const auto& t : traj_)
         if (t.missed > max_missed_)
@@ -76,7 +84,7 @@ StepResult MultiTracker3D::step(const std::vector<Eigen::Vector3d>& measurements
         traj_.end()
     );
 
-    // ── Build return value ────────────────────────────────────────────────
+    // Compile Traj Histories
     std::vector<TrajectoryHistory> traj_histories;
     traj_histories.reserve(traj_.size());
     std::transform(traj_.begin(), traj_.end(),
