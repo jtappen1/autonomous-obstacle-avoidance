@@ -88,7 +88,7 @@ ament_python_install_package(${PROJECT_NAME})
 
 # ── Python executables ────────────────────────────────────────────────────────
 install(PROGRAMS
-  scripts/detect3d.py
+  scripts/vision/detect3d.py
   scripts/vision/detections.py
   scripts/trackers/tracker.py
   DESTINATION lib/${PROJECT_NAME}
