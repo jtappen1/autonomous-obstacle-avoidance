@@ -38,7 +38,8 @@ class Detect3D(Node):
         rgb = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
         # --- Run your YOLO model here ---
         t0 = time.time()
-        results = self.model(rgb, verbose=False, classes=[0], imgsz=(640, 480))  # returns list of (u, v, w, h)
+        #results = self.model.track(rgb, verbose=False, classes=[0], imgsz=(640, 480))  # returns list of (u, v, w, h)
+        results = self.model.track(rgb, persist=True, tracker="botsort.yaml", verbose=False, classes=[0], imgsz=(640, 480))
         latency_ms = (time.time() - t0) * 1000
 
 
@@ -74,6 +75,10 @@ class Detect3D(Node):
 
         # extract xyxy
         xyxy = boxes.xyxy
+        if boxes.id is not None:
+            track_ids = boxes.id.cpu().numpy().astype(int)
+        else:
+            track_ids = np.full(len(boxes), -1)
         depth_image = depth_image.astype(np.float32) * 0.001
 
         # ensure numpy
@@ -99,7 +104,7 @@ class Detect3D(Node):
         cx = cx[valid]
         cy = cy[valid]
         Z = Z[valid]
-
+        valid_ids = track_ids[valid]
         if len(Z) == 0:
             return np.zeros((0, 3))
 
@@ -107,9 +112,11 @@ class Detect3D(Node):
 
         X = (cx - cx0) * Z / fx
         Y = (cy - cy0) * Z / fy
-        print(f"X: {X}, Y: {Y}, Z: {Z}")
-        print(depth_image.dtype, depth_image.min(), depth_image.max())
-        return np.stack([X, Y, Z], axis=1)
+        #print(f"X: {X}, Y: {Y}, Z: {Z}")
+        #print(depth_image.dtype, depth_image.min(), depth_image.max())
+        for tid, x_val, y_val, z_val in zip(valid_ids, X, Y, Z):
+            print(f"ID: {tid} | X: {x_val:.3f}, Y: {y_val:.3f}, Z: {z_val:.3f}")
+        return np.stack([X, Y, Z], axis=1), valid_ids
 
 def main(args=None):
     rclpy.init(args=args)
