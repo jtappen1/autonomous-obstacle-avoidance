@@ -1,7 +1,13 @@
 #pragma once
 #include <array>
 #include <Eigen/Dense>
- 
+
+
+struct PredictedState {
+    Eigen::Vector3d position;
+    Eigen::Vector3d velocity;
+    Eigen::Matrix<double, 6, 6> covariance;
+};
 
 class KalmanFilter3D {
 public:
@@ -25,6 +31,8 @@ public:
  
     /// Update step — fuses a 3-D position measurement.
     void update(const Vec3& z);
+    
+    std::vector<PredictedState> predictTrajectory(int steps) const;
  
     Vec3 position() const { return x_.head<3>(); }
     Vec3 velocity() const { return x_.tail<3>(); }

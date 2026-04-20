@@ -91,3 +91,25 @@ void KalmanFilter3D::update(const Vec3& z)
 
 
 }
+
+std::vector<PredictedState> KalmanFilter3D::predictTrajectory(int steps) const
+{
+    std::vector<PredictedState> trajectory;
+    trajectory.reserve(steps);
+
+    Vec6 x = x_;
+    Mat6 P = P_;
+
+    for (int i = 0; i < steps; ++i) {
+        x = F_ * x;
+        P = F_ * P * F_.transpose() + Q_;
+
+        trajectory.push_back({
+            x.head<3>(),
+            x.tail<3>(),
+            P
+        });
+    }
+    return trajectory;
+}
+

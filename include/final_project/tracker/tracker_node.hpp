@@ -31,7 +31,7 @@ private:
 
     // ── Helpers ────────────────────────────────────────────────────────────
     void publishMarkers(
-        const std::vector<TrajectoryHistory>& traj_history,
+        const std::vector<Obstacle>& obstacles,
         const std::string& frame_id = "camera_link");
     
     void publishDeleteMarkers(const std::vector<int>& dead_ids,

@@ -29,6 +29,8 @@ TrackerNode::TrackerNode()
         "/detector/detections", 10,
         std::bind(&TrackerNode::detectionCb, this, _1));
 
+    
+
     // ── Publisher ──────────────────────────────────────────────────────────
     marker_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>(
     "/tracker/markers", 10);
@@ -148,19 +150,19 @@ void TrackerNode::detectionCb(
 
     // ── Tracker step ──────────────────────────────────────────────────────
     auto result = tracker_.step(points_3d);
-    publishMarkers(result.histories);
+    publishMarkers(result.obstacles);
     publishDeleteMarkers(result.dead_ids);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 void TrackerNode::publishMarkers(
-    const std::vector<TrajectoryHistory>& trajectories,
+    const std::vector<Obstacle>& obstacles,
     const std::string& frame_id)
 {
     visualization_msgs::msg::MarkerArray array;
     auto now = get_clock()->now();
 
-    for (const auto& traj : trajectories)
+    for (const auto& ob : obstacles)
     {
         // ─────────────────────────────────────────────
         // LINE STRIP (trajectory history)
@@ -170,13 +172,13 @@ void TrackerNode::publishMarkers(
         m.header.stamp = now;
 
         m.ns = "tracks";
-        m.id = traj.id;
+        m.id = ob.id;
         m.type = visualization_msgs::msg::Marker::LINE_STRIP;
         m.action = visualization_msgs::msg::Marker::ADD;
 
         m.scale.x = 0.05;
 
-        std::mt19937 gen(traj.id);
+        std::mt19937 gen(ob.id);
         std::uniform_real_distribution<float> dist(0.2f, 1.0f);
 
         m.color.r = dist(gen);
@@ -185,7 +187,7 @@ void TrackerNode::publishMarkers(
         m.color.a = 1.0f;
 
         m.points.clear();
-        for (const auto& p : traj.history)
+        for (const auto& p : ob.history)
         {
             geometry_msgs::msg::Point pt;
             pt.x = p.x();
@@ -199,16 +201,16 @@ void TrackerNode::publishMarkers(
         // ─────────────────────────────────────────────
         // CURRENT POSITION (highlight marker)
         // ─────────────────────────────────────────────
-        if (!traj.history.empty())
+        if (!ob.history.empty())
         {
-            const auto& p = traj.history.back();
+            const auto& p = ob.history.back();
 
             visualization_msgs::msg::Marker curr;
             curr.header.frame_id = frame_id;
             curr.header.stamp = now;
 
             curr.ns = "tracks_current";
-            curr.id = traj.id;
+            curr.id = ob.id;
 
             curr.type = visualization_msgs::msg::Marker::SPHERE;
             curr.action = visualization_msgs::msg::Marker::ADD;
@@ -228,6 +230,36 @@ void TrackerNode::publishMarkers(
             curr.color.a = 1.0;
 
             array.markers.push_back(curr);
+        }
+        if (!ob.predicted_trajectory.empty())
+        {
+            visualization_msgs::msg::Marker pred;
+            pred.header.frame_id = frame_id;
+            pred.header.stamp    = now;
+
+            pred.ns     = "tracks_predicted";  // separate namespace
+            pred.id     = ob.id;
+            pred.type   = visualization_msgs::msg::Marker::LINE_STRIP;
+            pred.action = visualization_msgs::msg::Marker::ADD;
+
+            pred.scale.x = 0.03;  // thinner than history
+
+            // Same color as track but faded
+            pred.color.r = m.color.r;
+            pred.color.g = m.color.g;
+            pred.color.b = m.color.b;
+            pred.color.a = 0.4f;  // transparent
+
+            for (const auto& p : ob.predicted_trajectory)
+            {
+                geometry_msgs::msg::Point pt;
+                pt.x = p.position.x();
+                pt.y = p.position.y();
+                pt.z = p.position.z();
+                pred.points.push_back(pt);
+            }
+
+            array.markers.push_back(pred);
         }
     }
 
@@ -262,6 +294,14 @@ void TrackerNode::publishDeleteMarkers(
         curr.id = id;
         curr.action = visualization_msgs::msg::Marker::DELETE;
         array.markers.push_back(curr);
+
+        visualization_msgs::msg::Marker pred;
+        pred.header.stamp    = now;
+        pred.header.frame_id = frame_id;
+        pred.ns     = "tracks_predicted";  // ← match above
+        pred.id     = id;
+        pred.action = visualization_msgs::msg::Marker::DELETE;
+        array.markers.push_back(pred);
     }
 
     marker_pub_->publish(array);
