@@ -1,6 +1,7 @@
 #include "final_project/tracker/tracker_node.hpp"
 
 #include <sensor_msgs/point_cloud2_iterator.hpp>
+#include <geometry_msgs/msg/point_stamped.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <geometry_msgs/msg/vector3_stamped.hpp>
@@ -16,6 +17,26 @@
 
 
 using std::placeholders::_1;
+
+namespace {
+
+bool isOpticalFrame(const std::string& frame_id)
+{
+    return frame_id.find("optical") != std::string::npos;
+}
+
+geometry_msgs::msg::Quaternion yawToQuaternion(double yaw)
+{
+    geometry_msgs::msg::Quaternion quat;
+    const double half = 0.5 * yaw;
+    quat.x = 0.0;
+    quat.y = 0.0;
+    quat.z = std::sin(half);
+    quat.w = std::cos(half);
+    return quat;
+}
+
+}  // namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
 TrackerNode::TrackerNode()
@@ -52,7 +73,7 @@ TrackerNode::TrackerNode()
 
     RCLCPP_INFO(
         get_logger(),
-        "TrackerNode initialized | sensor_frame=%s global_frame=%s topic=%s",
+        "TrackerNode initialized | sensor_frame(fallback)=%s global_frame=%s topic=%s",
         sensor_frame_.c_str(), global_frame_.c_str(), obstacle_topic_.c_str());
 }
 
@@ -66,6 +87,7 @@ void TrackerNode::infoCb(
         msg->k[2],  // cx
         msg->k[5]   // cy
     };
+    camera_info_frame_id_ = msg->header.frame_id;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -88,6 +110,8 @@ void TrackerNode::depthCb(
 
     std::lock_guard<std::mutex> lock(depth_mutex_);
     depth_image_ = std::move(depth);
+    depth_frame_id_ = msg->header.frame_id;
+    depth_stamp_ = msg->header.stamp;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -102,6 +126,9 @@ void TrackerNode::detectionCb(
     }
 
     cv::Mat depth;
+    std::string measurement_frame;
+    rclcpp::Time transform_stamp = this->get_clock()->now();
+    builtin_interfaces::msg::Time transform_stamp_msg = msg->header.stamp;
     {
         std::lock_guard<std::mutex> lock(depth_mutex_);
         if (depth_image_.empty()) {
@@ -109,6 +136,32 @@ void TrackerNode::detectionCb(
             return;
         }
         depth = depth_image_;    // shallow copy (shared data); read-only below
+        if (!depth_frame_id_.empty()) {
+            measurement_frame = depth_frame_id_;
+        } else if (!camera_info_frame_id_.empty()) {
+            measurement_frame = camera_info_frame_id_;
+        } else {
+            measurement_frame = sensor_frame_;
+        }
+        if (depth_stamp_) {
+            transform_stamp = rclcpp::Time(*depth_stamp_);
+            transform_stamp_msg = *depth_stamp_;
+        } else if (msg->header.stamp.sec != 0 || msg->header.stamp.nanosec != 0) {
+            transform_stamp = rclcpp::Time(msg->header.stamp);
+        }
+    }
+
+    if (measurement_frame.empty()) {
+        RCLCPP_WARN(get_logger(), "detectionCb: no measurement frame available, dropping frame");
+        return;
+    }
+
+    if (!msg->header.frame_id.empty() && msg->header.frame_id != measurement_frame) {
+        RCLCPP_WARN_THROTTLE(
+            get_logger(), *get_clock(), 2000,
+            "Detection header frame (%s) != depth/intrinsics frame (%s). "
+            "Using depth-based frame for 3D projection.",
+            msg->header.frame_id.c_str(), measurement_frame.c_str());
     }
 
  
@@ -116,8 +169,8 @@ void TrackerNode::detectionCb(
     const int img_rows = depth.rows;
     const int img_cols = depth.cols;
 
-    std::vector<Eigen::Vector3d> points_3d;
-    points_3d.reserve(msg->detections.size());
+    std::vector<Eigen::Vector3d> points_sensor;
+    points_sensor.reserve(msg->detections.size());
 
     for (size_t det_idx = 0; det_idx < msg->detections.size(); ++det_idx) {
         const auto& det = msg->detections[det_idx];
@@ -162,19 +215,55 @@ void TrackerNode::detectionCb(
         const double x = (u - cx0) * z / fx;
         const double y = (v - cy0) * z / fy;
 
-        // Convert camera optical (x right, y down, z forward) to body-style
-        // camera_link axes (REP-103: x forward, y left, z up):
-        //   body.x = optical.z (depth)
-        //   body.y = -optical.x
-        //   body.z = -optical.y
-        points_3d.emplace_back(z, -x, -y);
+        // Depth deprojection is naturally expressed in the camera optical
+        // frame (x right, y down, z forward). Only rotate into camera_link-style
+        // axes if we are explicitly falling back to a non-optical source frame.
+        if (isOpticalFrame(measurement_frame)) {
+            points_sensor.emplace_back(x, y, z);
+        } else {
+            points_sensor.emplace_back(z, -x, -y);
+        }
+    }
+
+    std::vector<Eigen::Vector3d> points_global;
+    points_global.reserve(points_sensor.size());
+
+    if (!points_sensor.empty()) {
+        geometry_msgs::msg::TransformStamped tf_global_measurement;
+        try {
+            tf_global_measurement = tf_buffer_->lookupTransform(
+                global_frame_, measurement_frame, transform_stamp);
+        } catch (const tf2::TransformException& ex) {
+            RCLCPP_WARN_THROTTLE(
+                get_logger(), *get_clock(), 1000,
+                "TF %s->%s lookup failed: %s. Dropping %zu measurements for this frame.",
+                measurement_frame.c_str(), global_frame_.c_str(), ex.what(),
+                points_sensor.size());
+            points_sensor.clear();
+        }
+
+        for (const auto& point_sensor : points_sensor) {
+            geometry_msgs::msg::PointStamped point_msg_sensor;
+            point_msg_sensor.header.frame_id = measurement_frame;
+            point_msg_sensor.header.stamp = transform_stamp_msg;
+            point_msg_sensor.point.x = point_sensor.x();
+            point_msg_sensor.point.y = point_sensor.y();
+            point_msg_sensor.point.z = point_sensor.z();
+
+            geometry_msgs::msg::PointStamped point_msg_global;
+            tf2::doTransform(point_msg_sensor, point_msg_global, tf_global_measurement);
+            points_global.emplace_back(
+                point_msg_global.point.x,
+                point_msg_global.point.y,
+                point_msg_global.point.z);
+        }
     }
 
     // ── Tracker step ──────────────────────────────────────────────────────
-    auto result = tracker_.step(points_3d);
-    publishMarkers(result.obstacles, sensor_frame_);
-    publishDeleteMarkers(result.dead_ids, sensor_frame_);
-    publishObstaclesGlobal(result.obstacles, result.dead_ids, msg->header.stamp);
+    auto result = tracker_.step(points_global);
+    publishMarkers(result.obstacles, global_frame_);
+    publishDeleteMarkers(result.dead_ids, global_frame_);
+    publishObstacles(result.obstacles, result.dead_ids, msg->header.stamp);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -289,7 +378,7 @@ void TrackerNode::publishMarkers(
     marker_pub_->publish(array);
 }
 
-void TrackerNode::publishObstaclesGlobal(
+void TrackerNode::publishObstacles(
     const std::vector<Obstacle>& obstacles,
     const std::vector<int>& dead_ids,
     const builtin_interfaces::msg::Time& stamp)
@@ -303,47 +392,8 @@ void TrackerNode::publishObstaclesGlobal(
         arr.dead_ids.push_back(static_cast<int32_t>(id));
     }
 
-    if (obstacles.empty()) {
-        // Still publish so planner sees dead_ids and can clear empty state.
-        obstacle_pub_->publish(arr);
-        return;
-    }
-
-    geometry_msgs::msg::TransformStamped tf_global_sensor;
-    try {
-        tf_global_sensor = tf_buffer_->lookupTransform(
-            global_frame_, sensor_frame_, tf2::TimePointZero);
-    } catch (const tf2::TransformException& ex) {
-        RCLCPP_WARN_THROTTLE(
-            get_logger(), *get_clock(), 1000,
-            "TF %s->%s lookup failed: %s",
-            sensor_frame_.c_str(), global_frame_.c_str(), ex.what());
-        return;
-    }
-
     arr.obstacles.reserve(obstacles.size());
     for (const auto& ob : obstacles) {
-        // Position: transform as PoseStamped
-        geometry_msgs::msg::PoseStamped pose_sensor;
-        pose_sensor.header.frame_id = sensor_frame_;
-        pose_sensor.header.stamp = stamp;
-        pose_sensor.pose.position.x = ob.position.x();
-        pose_sensor.pose.position.y = ob.position.y();
-        pose_sensor.pose.position.z = ob.position.z();
-        pose_sensor.pose.orientation.w = 1.0;
-        geometry_msgs::msg::PoseStamped pose_global;
-        tf2::doTransform(pose_sensor, pose_global, tf_global_sensor);
-
-        // Velocity: Vector3Stamped — only rotation portion of TF applies
-        geometry_msgs::msg::Vector3Stamped vel_sensor;
-        vel_sensor.header.frame_id = sensor_frame_;
-        vel_sensor.header.stamp = stamp;
-        vel_sensor.vector.x = ob.velocity.x();
-        vel_sensor.vector.y = ob.velocity.y();
-        vel_sensor.vector.z = 0.0;
-        geometry_msgs::msg::Vector3Stamped vel_global;
-        tf2::doTransform(vel_sensor, vel_global, tf_global_sensor);
-
         // Class-based radius. Detector is currently person-only, so we map
         // Unknown -> person default here. Tune per-class when the detector
         // emits more classes.
@@ -359,10 +409,16 @@ void TrackerNode::publishObstaclesGlobal(
         overtake_msgs::msg::TrackedObstacle tracked;
         tracked.id = static_cast<int32_t>(ob.id);
         tracked.cls = static_cast<int32_t>(ob.c);
-        tracked.pose = pose_global.pose;
-        tracked.pose.position.z = 0.0;  // planner is 2D
-        tracked.velocity.x = vel_global.vector.x;
-        tracked.velocity.y = vel_global.vector.y;
+        tracked.pose.position.x = ob.position.x();
+        tracked.pose.position.y = ob.position.y();
+        tracked.pose.position.z = ob.position.z();
+        if (ob.velocity.squaredNorm() > 1e-6) {
+            tracked.pose.orientation = yawToQuaternion(ob.yaw);
+        } else {
+            tracked.pose.orientation.w = 1.0;
+        }
+        tracked.velocity.x = ob.velocity.x();
+        tracked.velocity.y = ob.velocity.y();
         tracked.velocity.z = 0.0;
         tracked.radius = radius;
         arr.obstacles.push_back(tracked);

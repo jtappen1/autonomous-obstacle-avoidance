@@ -39,14 +39,13 @@ private:
     // ── Helpers ────────────────────────────────────────────────────────────
     void publishMarkers(
         const std::vector<Obstacle>& obstacles,
-        const std::string& frame_id = "camera_link");
+        const std::string& frame_id);
 
     void publishDeleteMarkers(const std::vector<int>& dead_ids,
-                        const std::string& frame_id = "camera_link");
+                        const std::string& frame_id);
 
-    // Transform tracked obstacles into the global frame and publish a
-    // TrackedObstacleArray (id / velocity / radius / dead_ids) for the planner.
-    void publishObstaclesGlobal(
+    // Publish the globally tracked obstacle state for the planner.
+    void publishObstacles(
         const std::vector<Obstacle>& obstacles,
         const std::vector<int>& dead_ids,
         const builtin_interfaces::msg::Time& stamp);
@@ -64,12 +63,15 @@ private:
 
     // ── Params ─────────────────────────────────────────────────────────────
     std::string global_frame_;    // e.g. "map"
-    std::string sensor_frame_;    // e.g. "camera_link"
+    std::string sensor_frame_;    // fallback source frame when message headers are empty
     std::string obstacle_topic_;  // e.g. "/overtake/obstacles"
 
     // ── State ──────────────────────────────────────────────────────────────
     std::mutex              depth_mutex_;
     cv::Mat                 depth_image_;          ///< Latest depth frame
+    std::string             depth_frame_id_;
+    std::string             camera_info_frame_id_;
+    std::optional<builtin_interfaces::msg::Time> depth_stamp_;
     std::optional<Intrinsics> intrinsics_;
 
     MultiTracker3D tracker_;
