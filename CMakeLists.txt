@@ -17,23 +17,16 @@ endif()
 add_compile_options(-O3 -march=native -ffast-math -funroll-loops -DNDEBUG)
 
 # ── Find dependencies ─────────────────────────────────────────────────────────
-foreach(PACKAGE
-  ament_cmake
-  ament_cmake_python
-  rclcpp
-  rclpy
-  geometry_msgs
-  nav_msgs
-  sensor_msgs
-  std_msgs
-  cv_bridge
-  visualization_msgs
-  vision_msgs
-  tf2_ros)
+find_package(ament_cmake REQUIRED)
+find_package(ament_cmake_python REQUIRED)
 
-  find_package(${PACKAGE} REQUIRED)
-
-endforeach()
+find_package(rclcpp REQUIRED)
+find_package(rclpy REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(vision_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(cv_bridge REQUIRED)
 
 find_package(Eigen3 REQUIRED NO_MODULE)
 find_package(OpenCV REQUIRED)
@@ -41,42 +34,53 @@ find_package(OpenCV REQUIRED)
 # ── Include directories ───────────────────────────────────────────────────────
 include_directories(include)
 
-# ── Tracker library: filter + track + node (everything except main) ───────────
+# ── Tracker library: UKF + track manager + ROS node logic ────────────────────
 add_library(tracker_lib STATIC
-    src/multi_tracker.cpp
-    src/kalman_filter.cpp
-    src/tracker_node.cpp
+  src/UKF.cpp
+  src/track_manager.cpp
+  src/tracker_node.cpp
 )
 
 target_include_directories(tracker_lib PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+  ${OpenCV_INCLUDE_DIRS}
 )
 
-target_link_libraries(tracker_lib Eigen3::Eigen ${OpenCV_LIBS})
+target_link_libraries(tracker_lib
+  Eigen3::Eigen
+  ${OpenCV_LIBS}
+)
 
 ament_target_dependencies(tracker_lib
-    rclcpp
-    sensor_msgs
-    vision_msgs
-    cv_bridge
-    nav_msgs
-    geometry_msgs
-    visualization_msgs
+  rclcpp
+  sensor_msgs
+  vision_msgs
+  visualization_msgs
+  geometry_msgs
+  cv_bridge
 )
 
 # ── Tracker node executable (only main.cpp) ───────────────────────────────────
 add_executable(tracker_node src/main.cpp)
 
 target_include_directories(tracker_node PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
 target_link_libraries(tracker_node tracker_lib)
 
+ament_target_dependencies(tracker_node
+  rclcpp
+)
+
 # ── Install C++ targets ───────────────────────────────────────────────────────
-install(TARGETS tracker_node
-  DESTINATION lib/${PROJECT_NAME}
+install(TARGETS
+  tracker_lib
+  tracker_node
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 
 install(DIRECTORY include/

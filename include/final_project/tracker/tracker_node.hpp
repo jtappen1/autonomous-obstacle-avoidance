@@ -1,21 +1,27 @@
 #pragma once
-#include "final_project/tracker/multi_tracker.hpp"
 
-#include <rclcpp/rclcpp.hpp>
-#include <cv_bridge/cv_bridge.h>
-#include <sensor_msgs/msg/image.hpp>
-#include <sensor_msgs/msg/camera_info.hpp>
-#include <vision_msgs/msg/detection2_d_array.hpp>
-#include <visualization_msgs/msg/marker_array.hpp>
-#include <visualization_msgs/msg/marker.hpp>
-
-#include <optional>
 #include <mutex>
-#include <opencv2/core/mat.hpp>
+#include <optional>
+
 #include <Eigen/Dense>
+#include <cv_bridge/cv_bridge.h>
+#include <opencv2/core/mat.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/camera_info.hpp>
+#include <sensor_msgs/msg/image.hpp>
+#include <vision_msgs/msg/detection2_d_array.hpp>
+#include <visualization_msgs/msg/marker.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
+
+#include "final_project/tracker/track_manager.hpp"
+
+namespace final_project::tracker {
 
 struct Intrinsics {
-    double fx, fy, cx, cy;
+    double fx = 0.0;
+    double fy = 0.0;
+    double cx = 0.0;
+    double cy = 0.0;
 };
 
 class TrackerNode : public rclcpp::Node {
@@ -23,31 +29,26 @@ public:
     TrackerNode();
 
 private:
-    // ── Callbacks ──────────────────────────────────────────────────────────
     void depthCb(const sensor_msgs::msg::Image::ConstSharedPtr& msg);
     void infoCb(const sensor_msgs::msg::CameraInfo::ConstSharedPtr& msg);
-    void detectionCb(
-        const vision_msgs::msg::Detection2DArray::ConstSharedPtr& msg);
+    void detectionCb(const vision_msgs::msg::Detection2DArray::ConstSharedPtr& msg);
 
-    // ── Helpers ────────────────────────────────────────────────────────────
-    void publishMarkers(
-        const std::vector<Obstacle>& obstacles,
-        const std::string& frame_id = "camera_link");
-    
+    void publishMarkers(const std::vector<Obstacle>& obstacles,
+                        const std::string& frame_id);
     void publishDeleteMarkers(const std::vector<int>& dead_ids,
-                        const std::string& frame_id = "camera_link");
+                              const std::string& frame_id);
 
-    // ── Subscriptions & publisher ──────────────────────────────────────────
-    rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr       depth_sub_;
-    rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr  info_sub_;
+    rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_sub_;
+    rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr info_sub_;
     rclcpp::Subscription<vision_msgs::msg::Detection2DArray>::SharedPtr det_sub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
 
-    // ── State ──────────────────────────────────────────────────────────────
-    std::mutex              depth_mutex_;
-    cv::Mat                 depth_image_;          ///< Latest depth frame
+    std::mutex depth_mutex_;
+    cv::Mat depth_image_;
     std::optional<Intrinsics> intrinsics_;
+    std::optional<rclcpp::Time> last_update_stamp_;
 
-    MultiTracker3D tracker_;
-
+    TrackManager2D tracker_;
 };
+
+}  // namespace final_project::tracker
