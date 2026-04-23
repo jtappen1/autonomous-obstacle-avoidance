@@ -94,6 +94,16 @@ Step MultiTracker3D::step(const std::vector<Eigen::Vector3d>& measurements){
         for (auto& s : traj)
             f.obs.predicted_trajectory.push_back(s);
 
+        // Sync canonical state from the KF so downstream consumers see the
+        // smoothed estimate rather than the raw last measurement.
+        const Eigen::Vector3d kf_pos = f.kf->position();
+        const Eigen::Vector3d kf_vel = f.kf->velocity();
+        f.obs.position = kf_pos;
+        f.obs.velocity = kf_vel.head<2>();
+        if (f.obs.velocity.squaredNorm() > 1e-6) {
+            f.obs.yaw = std::atan2(f.obs.velocity.y(), f.obs.velocity.x());
+        }
+
         if (f.age >= min_age_) {
             obstacles.push_back(f.obs);
         }

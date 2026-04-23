@@ -2,10 +2,16 @@
 
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <geometry_msgs/msg/transform_stamped.hpp>
+#include <geometry_msgs/msg/vector3_stamped.hpp>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <tf2/exceptions.h>
 #include <opencv2/imgproc.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
 #include <visualization_msgs/msg/marker.hpp>
+#include <cstdint>
+#include <limits>
 #include <random>
 
 
@@ -16,6 +22,15 @@ TrackerNode::TrackerNode()
     : Node("tracker_node"),
       tracker_(1.0 / 30.0)
 {
+    // ── Params ─────────────────────────────────────────────────────────────
+    global_frame_   = this->declare_parameter<std::string>("global_frame",   "map");
+    sensor_frame_   = this->declare_parameter<std::string>("sensor_frame",   "camera_link");
+    obstacle_topic_ = this->declare_parameter<std::string>("obstacle_topic", "/overtake/tracked_obstacles");
+
+    // ── TF ─────────────────────────────────────────────────────────────────
+    tf_buffer_   = std::make_unique<tf2_ros::Buffer>(this->get_clock());
+    tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
+
     // ── Subscriptions ──────────────────────────────────────────────────────
     depth_sub_ = create_subscription<sensor_msgs::msg::Image>(
         "/camera/camera/aligned_depth_to_color/image_raw", 10,
@@ -29,13 +44,16 @@ TrackerNode::TrackerNode()
         "/detector/detections", 10,
         std::bind(&TrackerNode::detectionCb, this, _1));
 
-    
-
-    // ── Publisher ──────────────────────────────────────────────────────────
+    // ── Publishers ─────────────────────────────────────────────────────────
     marker_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>(
-    "/tracker/markers", 10);
+        "/tracker/markers", 10);
+    obstacle_pub_ = create_publisher<overtake_msgs::msg::TrackedObstacleArray>(
+        obstacle_topic_, 10);
 
-    RCLCPP_INFO(get_logger(), "TrackerNode initialized");
+    RCLCPP_INFO(
+        get_logger(),
+        "TrackerNode initialized | sensor_frame=%s global_frame=%s topic=%s",
+        sensor_frame_.c_str(), global_frame_.c_str(), obstacle_topic_.c_str());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -144,14 +162,19 @@ void TrackerNode::detectionCb(
         const double x = (u - cx0) * z / fx;
         const double y = (v - cy0) * z / fy;
 
-        // Python code uses [z, x, -y] ordering
-        points_3d.emplace_back(z, x, -y);
+        // Convert camera optical (x right, y down, z forward) to body-style
+        // camera_link axes (REP-103: x forward, y left, z up):
+        //   body.x = optical.z (depth)
+        //   body.y = -optical.x
+        //   body.z = -optical.y
+        points_3d.emplace_back(z, -x, -y);
     }
 
     // ── Tracker step ──────────────────────────────────────────────────────
     auto result = tracker_.step(points_3d);
-    publishMarkers(result.obstacles);
-    publishDeleteMarkers(result.dead_ids);
+    publishMarkers(result.obstacles, sensor_frame_);
+    publishDeleteMarkers(result.dead_ids, sensor_frame_);
+    publishObstaclesGlobal(result.obstacles, result.dead_ids, msg->header.stamp);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -264,6 +287,88 @@ void TrackerNode::publishMarkers(
     }
 
     marker_pub_->publish(array);
+}
+
+void TrackerNode::publishObstaclesGlobal(
+    const std::vector<Obstacle>& obstacles,
+    const std::vector<int>& dead_ids,
+    const builtin_interfaces::msg::Time& stamp)
+{
+    overtake_msgs::msg::TrackedObstacleArray arr;
+    arr.header.frame_id = global_frame_;
+    arr.header.stamp = stamp;
+
+    arr.dead_ids.reserve(dead_ids.size());
+    for (int id : dead_ids) {
+        arr.dead_ids.push_back(static_cast<int32_t>(id));
+    }
+
+    if (obstacles.empty()) {
+        // Still publish so planner sees dead_ids and can clear empty state.
+        obstacle_pub_->publish(arr);
+        return;
+    }
+
+    geometry_msgs::msg::TransformStamped tf_global_sensor;
+    try {
+        tf_global_sensor = tf_buffer_->lookupTransform(
+            global_frame_, sensor_frame_, tf2::TimePointZero);
+    } catch (const tf2::TransformException& ex) {
+        RCLCPP_WARN_THROTTLE(
+            get_logger(), *get_clock(), 1000,
+            "TF %s->%s lookup failed: %s",
+            sensor_frame_.c_str(), global_frame_.c_str(), ex.what());
+        return;
+    }
+
+    arr.obstacles.reserve(obstacles.size());
+    for (const auto& ob : obstacles) {
+        // Position: transform as PoseStamped
+        geometry_msgs::msg::PoseStamped pose_sensor;
+        pose_sensor.header.frame_id = sensor_frame_;
+        pose_sensor.header.stamp = stamp;
+        pose_sensor.pose.position.x = ob.position.x();
+        pose_sensor.pose.position.y = ob.position.y();
+        pose_sensor.pose.position.z = ob.position.z();
+        pose_sensor.pose.orientation.w = 1.0;
+        geometry_msgs::msg::PoseStamped pose_global;
+        tf2::doTransform(pose_sensor, pose_global, tf_global_sensor);
+
+        // Velocity: Vector3Stamped — only rotation portion of TF applies
+        geometry_msgs::msg::Vector3Stamped vel_sensor;
+        vel_sensor.header.frame_id = sensor_frame_;
+        vel_sensor.header.stamp = stamp;
+        vel_sensor.vector.x = ob.velocity.x();
+        vel_sensor.vector.y = ob.velocity.y();
+        vel_sensor.vector.z = 0.0;
+        geometry_msgs::msg::Vector3Stamped vel_global;
+        tf2::doTransform(vel_sensor, vel_global, tf_global_sensor);
+
+        // Class-based radius. Detector is currently person-only, so we map
+        // Unknown -> person default here. Tune per-class when the detector
+        // emits more classes.
+        float radius = 0.22f;
+        switch (ob.c) {
+            case ObstacleClass::Ball: radius = 0.12f; break;
+            case ObstacleClass::Cone: radius = 0.18f; break;
+            case ObstacleClass::Person:
+            case ObstacleClass::Unknown:
+            default:                  radius = 0.22f; break;
+        }
+
+        overtake_msgs::msg::TrackedObstacle tracked;
+        tracked.id = static_cast<int32_t>(ob.id);
+        tracked.cls = static_cast<int32_t>(ob.c);
+        tracked.pose = pose_global.pose;
+        tracked.pose.position.z = 0.0;  // planner is 2D
+        tracked.velocity.x = vel_global.vector.x;
+        tracked.velocity.y = vel_global.vector.y;
+        tracked.velocity.z = 0.0;
+        tracked.radius = radius;
+        arr.obstacles.push_back(tracked);
+    }
+
+    obstacle_pub_->publish(arr);
 }
 
 void TrackerNode::publishDeleteMarkers(

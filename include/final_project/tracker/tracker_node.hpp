@@ -8,9 +8,16 @@
 #include <vision_msgs/msg/detection2_d_array.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
 #include <visualization_msgs/msg/marker.hpp>
+#include <builtin_interfaces/msg/time.hpp>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
+#include <overtake_msgs/msg/tracked_obstacle.hpp>
+#include <overtake_msgs/msg/tracked_obstacle_array.hpp>
 
 #include <optional>
+#include <memory>
 #include <mutex>
+#include <string>
 #include <opencv2/core/mat.hpp>
 #include <Eigen/Dense>
 
@@ -33,15 +40,32 @@ private:
     void publishMarkers(
         const std::vector<Obstacle>& obstacles,
         const std::string& frame_id = "camera_link");
-    
+
     void publishDeleteMarkers(const std::vector<int>& dead_ids,
                         const std::string& frame_id = "camera_link");
+
+    // Transform tracked obstacles into the global frame and publish a
+    // TrackedObstacleArray (id / velocity / radius / dead_ids) for the planner.
+    void publishObstaclesGlobal(
+        const std::vector<Obstacle>& obstacles,
+        const std::vector<int>& dead_ids,
+        const builtin_interfaces::msg::Time& stamp);
 
     // ── Subscriptions & publisher ──────────────────────────────────────────
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr       depth_sub_;
     rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr  info_sub_;
     rclcpp::Subscription<vision_msgs::msg::Detection2DArray>::SharedPtr det_sub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
+    rclcpp::Publisher<overtake_msgs::msg::TrackedObstacleArray>::SharedPtr obstacle_pub_;
+
+    // ── TF ─────────────────────────────────────────────────────────────────
+    std::unique_ptr<tf2_ros::Buffer>            tf_buffer_;
+    std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
+
+    // ── Params ─────────────────────────────────────────────────────────────
+    std::string global_frame_;    // e.g. "map"
+    std::string sensor_frame_;    // e.g. "camera_link"
+    std::string obstacle_topic_;  // e.g. "/overtake/obstacles"
 
     // ── State ──────────────────────────────────────────────────────────────
     std::mutex              depth_mutex_;

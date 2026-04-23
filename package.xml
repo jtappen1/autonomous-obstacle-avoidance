@@ -18,7 +18,10 @@
   <depend>cv_bridge</depend>
   <depend>visualization_msgs</depend>
   <depend>vision_msgs</depend>
+  <depend>tf2</depend>
   <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>overtake_msgs</depend>
   <depend>python3-numpy</depend>
   <depend>python3-opencv</depend>
   <depend>libeigen3-dev</depend>

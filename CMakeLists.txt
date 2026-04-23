@@ -29,7 +29,10 @@ foreach(PACKAGE
   cv_bridge
   visualization_msgs
   vision_msgs
-  tf2_ros)
+  tf2
+  tf2_ros
+  tf2_geometry_msgs
+  overtake_msgs)
 
   find_package(${PACKAGE} REQUIRED)
 
@@ -63,6 +66,10 @@ ament_target_dependencies(tracker_lib
     nav_msgs
     geometry_msgs
     visualization_msgs
+    tf2
+    tf2_ros
+    tf2_geometry_msgs
+    overtake_msgs
 )
 
 # ── Tracker node executable (only main.cpp) ───────────────────────────────────
