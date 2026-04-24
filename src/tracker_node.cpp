@@ -3,26 +3,195 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <random>
+#include <string>
 #include <vector>
 
-#include <opencv2/imgproc.hpp>
+#include <geometry_msgs/msg/point_stamped.hpp>
+#include <tf2/LinearMath/Matrix3x3.h>   // CHANGED
+#include <tf2/LinearMath/Transform.h>   // CHANGED
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
 namespace final_project::tracker {
 
 using std::placeholders::_1;
+using std::placeholders::_2;  // CHANGED
 
 namespace {
 
-double medianInPlace(std::vector<float>& values) {
+// CHANGED: LiDAR point projected into the image.
+struct ProjectedLidarPoint {
+    int scan_index = -1;
+    double range = 0.0;
+    double u = 0.0;
+    double v = 0.0;
+    Eigen::Vector2d xy_scan = Eigen::Vector2d::Zero();  // 2D point in scan frame
+};
+
+// CHANGED: candidate cluster inside one bbox.
+struct ClusterCandidate {
+    int begin = 0;
+    int end = 0;
+    int count = 0;
+
+    double median_range = std::numeric_limits<double>::infinity();
+    double median_u = 0.0;
+    double median_v = 0.0;
+    double score = std::numeric_limits<double>::infinity();
+
+    Eigen::Vector2d centroid_scan = Eigen::Vector2d::Zero();
+    Eigen::Matrix2d cov_scan = Eigen::Matrix2d::Identity();
+};
+
+double medianInPlace(std::vector<double>& values) {
     if (values.empty()) return std::numeric_limits<double>::quiet_NaN();
     const std::size_t mid = values.size() / 2;
-    std::nth_element(values.begin(), values.begin() + static_cast<std::ptrdiff_t>(mid), values.end());
-    return static_cast<double>(values[mid]);
+    std::nth_element(values.begin(),
+                     values.begin() + static_cast<std::ptrdiff_t>(mid),
+                     values.end());
+    return values[mid];
 }
 
-std::string resolveFrameId(const std::string& header_frame_id) {
-    return header_frame_id.empty() ? std::string("camera_link") : header_frame_id;
+double adaptiveGapThreshold(double range_m) {
+    // CHANGED: adaptive Euclidean split threshold.
+    return 0.08 + 0.03 * range_m;
+}
+
+bool shouldSplitCluster(const ProjectedLidarPoint& prev,
+                        const ProjectedLidarPoint& curr) {
+    // CHANGED: break cluster if scan rays are not adjacent.
+    if (curr.scan_index - prev.scan_index > 1) {
+        return true;
+    }
+
+    // CHANGED: break cluster if adjacent metric gap is too large.
+    const double gap = (curr.xy_scan - prev.xy_scan).norm();
+    const double thresh =
+        std::max(adaptiveGapThreshold(prev.range), adaptiveGapThreshold(curr.range));
+    return gap > thresh;
+}
+
+Eigen::Vector2d componentwiseMedian(const std::vector<ProjectedLidarPoint>& pts,
+                                    int begin,
+                                    int end) {
+    std::vector<double> xs;
+    std::vector<double> ys;
+    xs.reserve(std::max(0, end - begin));
+    ys.reserve(std::max(0, end - begin));
+
+    for (int i = begin; i < end; ++i) {
+        xs.push_back(pts[i].xy_scan.x());
+        ys.push_back(pts[i].xy_scan.y());
+    }
+
+    return Eigen::Vector2d(medianInPlace(xs), medianInPlace(ys));
+}
+
+Eigen::Matrix2d covarianceAroundCentroid(const std::vector<ProjectedLidarPoint>& pts,
+                                         int begin,
+                                         int end,
+                                         const Eigen::Vector2d& centroid,
+                                         double median_range) {
+    Eigen::Matrix2d cov = Eigen::Matrix2d::Zero();
+    const int count = end - begin;
+
+    if (count >= 2) {
+        for (int i = begin; i < end; ++i) {
+            const Eigen::Vector2d d = pts[i].xy_scan - centroid;
+            cov += d * d.transpose();
+        }
+        cov /= static_cast<double>(count - 1);
+    }
+
+    // CHANGED: covariance floor grows slightly with range and small cluster size.
+    const double sigma_floor = 0.04 + 0.01 * median_range + (count < 2 ? 0.15 : 0.0);
+    cov += sigma_floor * sigma_floor * Eigen::Matrix2d::Identity();
+
+    cov = 0.5 * (cov + cov.transpose());
+    return cov;
+}
+
+ClusterCandidate buildClusterCandidate(const std::vector<ProjectedLidarPoint>& pts,
+                                       int begin,
+                                       int end,
+                                       double bbox_u,
+                                       double bbox_v,
+                                       double bbox_w,
+                                       double bbox_h) {
+    ClusterCandidate c;
+    c.begin = begin;
+    c.end = end;
+    c.count = end - begin;
+
+    if (c.count <= 0) return c;
+
+    std::vector<double> ranges;
+    std::vector<double> us;
+    std::vector<double> vs;
+    ranges.reserve(c.count);
+    us.reserve(c.count);
+    vs.reserve(c.count);
+
+    for (int i = begin; i < end; ++i) {
+        ranges.push_back(pts[i].range);
+        us.push_back(pts[i].u);
+        vs.push_back(pts[i].v);
+    }
+
+    c.median_range = medianInPlace(ranges);
+    c.median_u = medianInPlace(us);
+    c.median_v = medianInPlace(vs);
+    c.centroid_scan = componentwiseMedian(pts, begin, end);
+    c.cov_scan = covarianceAroundCentroid(pts, begin, end, c.centroid_scan, c.median_range);
+
+    // CHANGED:
+    // Use closeness to bbox center as a CLUSTER score, not direct point weights for centroid.
+    const double half_w = std::max(0.5 * bbox_w, 1.0);
+    const double half_h = std::max(0.5 * bbox_h, 1.0);
+    const double du = (c.median_u - bbox_u) / half_w;
+    const double dv = (c.median_v - bbox_v) / half_h;
+    const double center_penalty = du * du + dv * dv;
+
+    // CHANGED: prefer front-most plausible cluster, but reward support count.
+    const double count_bonus = 0.05 * std::min(c.count, 8);
+    c.score = c.median_range + 0.35 * center_penalty - count_bonus;
+
+    return c;
+}
+
+std::optional<ClusterCandidate> selectBestCluster(const std::vector<ProjectedLidarPoint>& pts,
+                                                  double bbox_u,
+                                                  double bbox_v,
+                                                  double bbox_w,
+                                                  double bbox_h) {
+    if (pts.empty()) return std::nullopt;
+
+    std::vector<ClusterCandidate> clusters;
+    int start = 0;
+
+    for (int i = 1; i < static_cast<int>(pts.size()); ++i) {
+        if (shouldSplitCluster(pts[i - 1], pts[i])) {
+            clusters.push_back(buildClusterCandidate(pts, start, i, bbox_u, bbox_v, bbox_w, bbox_h));
+            start = i;
+        }
+    }
+    clusters.push_back(buildClusterCandidate(
+        pts, start, static_cast<int>(pts.size()), bbox_u, bbox_v, bbox_w, bbox_h));
+
+    auto best_it = std::min_element(
+        clusters.begin(), clusters.end(),
+        [](const ClusterCandidate& a, const ClusterCandidate& b) {
+            return a.score < b.score;
+        });
+
+    if (best_it == clusters.end() || best_it->count <= 0) return std::nullopt;
+    return *best_it;
+}
+
+std::string resolveMarkerFrame(const std::string& header_frame_id,
+                               const std::string& fallback) {
+    return header_frame_id.empty() ? fallback : header_frame_id;
 }
 
 }  // namespace
@@ -30,152 +199,176 @@ std::string resolveFrameId(const std::string& header_frame_id) {
 TrackerNode::TrackerNode()
     : Node("tracker_node"),
       tracker_(1.0 / 30.0) {
-    depth_sub_ = create_subscription<sensor_msgs::msg::Image>(
-        "/camera/camera/aligned_depth_to_color/image_raw", 10,
-        std::bind(&TrackerNode::depthCb, this, _1));
-
+    // CHANGED: keep CameraInfo subscription for intrinsics + optical frame.
     info_sub_ = create_subscription<sensor_msgs::msg::CameraInfo>(
-        "/camera/camera/aligned_depth_to_color/camera_info", 10,
+        "/camera/camera/aligned_depth_to_color/camera_info",
+        rclcpp::SensorDataQoS(),
         std::bind(&TrackerNode::infoCb, this, _1));
 
-    det_sub_ = create_subscription<vision_msgs::msg::Detection2DArray>(
-        "/detector/detections", 10,
-        std::bind(&TrackerNode::detectionCb, this, _1));
+    // CHANGED: synchronized detection + LiDAR subscriptions.
+    det_sub_.subscribe(this, "/detector/detections", rmw_qos_profile_sensor_data);
+    scan_sub_.subscribe(this, "/scan", rmw_qos_profile_sensor_data);
+
+    sync_ = std::make_shared<message_filters::Synchronizer<SyncPolicy>>(
+        SyncPolicy(10), det_sub_, scan_sub_);
+
+    // CHANGED: approximate sync window, tune between 30–60 ms.
+    sync_->setMaxIntervalDuration(rclcpp::Duration::from_seconds(0.05));
+    sync_->registerCallback(std::bind(&TrackerNode::fusedCb, this, _1, _2));
 
     marker_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>(
         "/tracker/markers", 10);
 
-    RCLCPP_INFO(get_logger(), "TrackerNode initialized");
+    RCLCPP_INFO(get_logger(), "TrackerNode initialized (LiDAR + detections)");
 }
 
 void TrackerNode::infoCb(const sensor_msgs::msg::CameraInfo::ConstSharedPtr& msg) {
     intrinsics_ = Intrinsics{msg->k[0], msg->k[4], msg->k[2], msg->k[5]};
+
+    // CHANGED: store the camera optical frame used for image projection.
+    if (!msg->header.frame_id.empty()) {
+        camera_frame_ = msg->header.frame_id;
+    }
 }
 
-void TrackerNode::depthCb(const sensor_msgs::msg::Image::ConstSharedPtr& msg) {
-    cv::Mat depth;
-    try {
-        depth = cv_bridge::toCvCopy(msg, msg->encoding)->image;
-    } catch (const cv_bridge::Exception& e) {
-        RCLCPP_WARN(get_logger(), "cv_bridge: %s", e.what());
-        return;
-    }
-
-    if (depth.type() == CV_32FC1) {
-        depth.convertTo(depth, CV_16UC1, 1000.0);
-    }
-
-    std::lock_guard<std::mutex> lock(depth_mutex_);
-    depth_image_ = std::move(depth);
-}
-
-void TrackerNode::detectionCb(const vision_msgs::msg::Detection2DArray::ConstSharedPtr& msg) {
+void TrackerNode::fusedCb(
+    const vision_msgs::msg::Detection2DArray::ConstSharedPtr& det_msg,
+    const sensor_msgs::msg::LaserScan::ConstSharedPtr& scan_msg) {
     if (!intrinsics_) {
-        RCLCPP_WARN(get_logger(), "detectionCb: no intrinsics yet, dropping frame");
+        RCLCPP_WARN(get_logger(), "fusedCb: no intrinsics yet, dropping frame");
         return;
-    }
-
-    cv::Mat depth;
-    {
-        std::lock_guard<std::mutex> lock(depth_mutex_);
-        if (depth_image_.empty()) {
-            RCLCPP_WARN(get_logger(), "detectionCb: depth image empty, dropping frame");
-            return;
-        }
-        depth = depth_image_;
     }
 
     const auto [fx, fy, cx0, cy0] = *intrinsics_;
-    const int img_rows = depth.rows;
-    const int img_cols = depth.cols;
+    const int img_cols = std::max(1, static_cast<int>(std::round(2.0 * cx0)));
+    const int img_rows = std::max(1, static_cast<int>(std::round(2.0 * cy0)));
 
-    std::vector<DetectionMeasurement> measurements;
-    measurements.reserve(msg->detections.size());
+    const rclcpp::Time stamp =
+        (det_msg->header.stamp.sec == 0 && det_msg->header.stamp.nanosec == 0)
+            ? rclcpp::Time(scan_msg->header.stamp)
+            : rclcpp::Time(det_msg->header.stamp);
 
-    for (const auto& det : msg->detections) {
-        const int u = static_cast<int>(det.bbox.center.position.x);
-        const int v = static_cast<int>(det.bbox.center.position.y);
+    geometry_msgs::msg::TransformStamped tf_scan_to_camera_msg;
+    geometry_msgs::msg::TransformStamped tf_scan_to_track_msg;
 
-        const int x1 = std::max(u - 2, 0);
-        const int x2 = std::min(u + 3, img_cols);
-        const int y1 = std::max(v - 2, 0);
-        const int y2 = std::min(v + 3, img_rows);
-        if (x1 >= x2 || y1 >= y2) continue;
+    try {
+        tf_scan_to_camera_msg = tf_buffer_.lookupTransform(
+            camera_frame_, scan_msg->header.frame_id, tf2::TimePointZero);
 
-        const cv::Rect roi(x1, y1, x2 - x1, y2 - y1);
-        cv::Mat patch;
-        depth(roi).convertTo(patch, CV_32F);
+        tf_scan_to_track_msg = tf_buffer_.lookupTransform(
+            tracking_frame_, scan_msg->header.frame_id, stamp);
+    } catch (const tf2::TransformException& e) {
+        RCLCPP_WARN(get_logger(), "TF lookup failed: %s", e.what());
+        return;
+    }
 
-        std::vector<float> valid_depths;
-        valid_depths.reserve(patch.total());
-        for (int r = 0; r < patch.rows; ++r) {
-            const float* row = patch.ptr<float>(r);
-            for (int c = 0; c < patch.cols; ++c) {
-                if (row[c] > 0.f) valid_depths.push_back(row[c]);
-            }
-        }
-        if (valid_depths.empty()) continue;
+    tf2::Transform tf_scan_to_camera;
+    tf2::Transform tf_scan_to_track;
+    tf2::fromMsg(tf_scan_to_camera_msg.transform, tf_scan_to_camera);
+    tf2::fromMsg(tf_scan_to_track_msg.transform, tf_scan_to_track);
 
-        std::vector<float> depths_for_median = valid_depths;
-        const double z = medianInPlace(depths_for_median) * 0.001;
+    // CHANGED: 2D rotation to map/odom for covariance rotation.
+    const tf2::Matrix3x3 R3(tf_scan_to_track.getRotation());
+    Eigen::Matrix2d R_track_scan;
+    R_track_scan << R3[0][0], R3[0][1],
+                    R3[1][0], R3[1][1];
 
-        std::vector<float> abs_dev;
-        abs_dev.reserve(valid_depths.size());
-        for (float d_mm : valid_depths) {
-            abs_dev.push_back(std::fabs(d_mm * 0.001f - static_cast<float>(z)));
-        }
-        const double mad = medianInPlace(abs_dev);
+    // CHANGED: project all valid LiDAR points into image space once.
+    std::vector<ProjectedLidarPoint> projected_points;
+    projected_points.reserve(scan_msg->ranges.size());
 
-        const double x = (u - cx0) * z / fx;
-        const double y = (v - cy0) * z / fy;
-
-       RCLCPP_INFO(
-            get_logger(),
-            "x: %.3f, y: %.3f, z: %.3f",
-            x, y, z
-        );
-
-        geometry_msgs::msg::PointStamped cam_point, map_point;
-        cam_point.header.frame_id = "camera_link";
-        cam_point.header.stamp = msg->header.stamp;
-        cam_point.point.x = x;   // forward
-        cam_point.point.y = y;   // lateral
-        cam_point.point.z = z;  // height
-        
-
-        try {
-            tf_buffer_.transform(cam_point, map_point, "map");
-            RCLCPP_INFO(
-                get_logger(),
-                "map_point -> x: %.3f, y: %.3f, z: %.3f",
-                map_point.point.x,
-                map_point.point.y,
-                map_point.point.z
-            );
-
-        } catch (const tf2::TransformException& e) {
-            RCLCPP_WARN(get_logger(), "TF lookup failed: %s", e.what());
+    for (int i = 0; i < static_cast<int>(scan_msg->ranges.size()); ++i) {
+        const double range = scan_msg->ranges[i];
+        if (!std::isfinite(range) ||
+            range < scan_msg->range_min ||
+            range > scan_msg->range_max) {
             continue;
         }
 
+        const double theta =
+            scan_msg->angle_min + static_cast<double>(i) * scan_msg->angle_increment;
+
+        const double x_scan = range * std::cos(theta);
+        const double y_scan = range * std::sin(theta);
+
+        const tf2::Vector3 p_scan(x_scan, y_scan, 0.0);
+        const tf2::Vector3 p_cam = tf_scan_to_camera * p_scan;
+
+        // CHANGED:
+        // Assumes camera optical frame convention: X right, Y down, Z forward.
+        const double xc = p_cam.x();
+        const double yc = p_cam.y();
+        const double zc = p_cam.z();
+        if (zc <= 0.05) continue;
+
+        const double u = fx * (xc / zc) + cx0;
+        const double v = fy * (yc / zc) + cy0;
+
+        if (u < 0.0 || u >= img_cols || v < 0.0 || v >= img_rows) continue;
+
+        ProjectedLidarPoint point;
+        point.scan_index = i;
+        point.range = range;
+        point.u = u;
+        point.v = v;
+        point.xy_scan = Eigen::Vector2d(x_scan, y_scan);
+        projected_points.push_back(point);
+    }
+
+    std::vector<DetectionMeasurement> measurements;
+    measurements.reserve(det_msg->detections.size());
+
+    // CHANGED: generate one LiDAR-based measurement per detection.
+    for (const auto& det : det_msg->detections) {
+        const double bbox_u = det.bbox.center.position.x;
+        const double bbox_v = det.bbox.center.position.y;
+        const double bbox_w = det.bbox.size_x;
+        const double bbox_h = det.bbox.size_y;
+
+        // CHANGED: small pixel padding makes association more tolerant.
+        const double pad_px = 3.0;
+        const double x_min = bbox_u - 0.5 * bbox_w - pad_px;
+        const double x_max = bbox_u + 0.5 * bbox_w + pad_px;
+        const double y_min = bbox_v - 0.5 * bbox_h - pad_px;
+        const double y_max = bbox_v + 0.5 * bbox_h + pad_px;
+
+        std::vector<ProjectedLidarPoint> in_bbox;
+        in_bbox.reserve(32);
+
+        for (const auto& point : projected_points) {
+            if (point.u >= x_min && point.u <= x_max &&
+                point.v >= y_min && point.v <= y_max) {
+                in_bbox.push_back(point);
+            }
+        }
+
+        if (in_bbox.empty()) continue;
+
+        // CHANGED: cluster points in scan order and pick best cluster.
+        const auto best_cluster =
+            selectBestCluster(in_bbox, bbox_u, bbox_v, bbox_w, bbox_h);
+        if (!best_cluster.has_value()) continue;
+
+        const tf2::Vector3 centroid_scan(
+            best_cluster->centroid_scan.x(),
+            best_cluster->centroid_scan.y(),
+            0.0);
+        const tf2::Vector3 centroid_track = tf_scan_to_track * centroid_scan;
+
         DetectionMeasurement measurement;
-        measurement.pos = Eigen::Vector2d(map_point.point.x, map_point.point.y);
-        measurement.height = map_point.point.z;
+        measurement.pos = Eigen::Vector2d(centroid_track.x(), centroid_track.y());
+        measurement.height = 0.0;
 
-        // DetectionMeasurement measurement;
-        // measurement.pos = Eigen::Vector2d(z, x);   // [forward, lateral]
-        // measurement.height = -y;
+        // CHANGED: rotate cluster covariance into tracking frame.
+        Eigen::Matrix2d R_track =
+            R_track_scan * best_cluster->cov_scan * R_track_scan.transpose();
+        R_track = 0.5 * (R_track + R_track.transpose());
+        R_track.diagonal().array() += 1e-4;
+        measurement.R = R_track;
 
-        const double sigma_forward = std::max(0.08, 1.4826 * mad + 0.01 * z);
-        const double sigma_lateral = std::max(0.05, (z / std::max(fx, 1.0)) * 3.0 + 0.25 * sigma_forward);
-        measurement.R << sigma_forward * sigma_forward, 0.0,
-                         0.0, sigma_lateral * sigma_lateral;
         measurements.push_back(measurement);
     }
 
-    rclcpp::Time stamp = msg->header.stamp.sec == 0 && msg->header.stamp.nanosec == 0
-                             ? now()
-                             : rclcpp::Time(msg->header.stamp);
     double dt = 1.0 / 30.0;
     if (last_update_stamp_) {
         dt = (stamp - *last_update_stamp_).seconds();
@@ -186,9 +379,8 @@ void TrackerNode::detectionCb(const vision_msgs::msg::Detection2DArray::ConstSha
     last_update_stamp_ = stamp;
 
     const auto result = tracker_.step(measurements, dt);
-    const std::string frame_id = resolveFrameId(msg->header.frame_id);
-    publishMarkers(result.obstacles, "map");
-    publishDeleteMarkers(result.dead_ids, "map");
+    publishMarkers(result.obstacles, tracking_frame_);
+    publishDeleteMarkers(result.dead_ids, tracking_frame_);
 }
 
 void TrackerNode::publishMarkers(const std::vector<Obstacle>& obstacles,
@@ -254,6 +446,7 @@ void TrackerNode::publishMarkers(const std::vector<Obstacle>& obstacles,
         pred.color.g = history.color.g;
         pred.color.b = history.color.b;
         pred.color.a = 0.4f;
+
         for (const auto& p : ob.predicted_trajectory) {
             geometry_msgs::msg::Point pt;
             pt.x = p.position.x();
