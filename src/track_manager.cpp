@@ -159,9 +159,25 @@ Step TrackManager2D::step(const std::vector<DetectionMeasurement>& measurements,
         }
     }
 
+    // for (std::size_t j = 0; j < measurements.size(); ++j) {
+    //     if (!detection_used[j]) {
+    //         spawn(measurements[j], used_dt);
+    //     }
+    // }
     for (std::size_t j = 0; j < measurements.size(); ++j) {
         if (!detection_used[j]) {
-            spawn(measurements[j], used_dt);
+            // don't spawn if too close to an existing track
+            bool too_close = false;
+            for (const auto& track : tracks_) {
+                const double dist = (measurements[j].pos - track.ukf.position()).norm();
+                if (dist < min_spawn_distance_) {
+                    too_close = true;
+                    break;
+                }
+            }
+            if (!too_close) {
+                spawn(measurements[j], used_dt);
+            }
         }
     }
 

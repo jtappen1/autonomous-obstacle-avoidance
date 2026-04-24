@@ -27,6 +27,10 @@ find_package(vision_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
+find_package(tf2_ros REQUIRED)
+find_package(tf2_geometry_msgs REQUIRED)
+
+
 
 find_package(Eigen3 REQUIRED NO_MODULE)
 find_package(OpenCV REQUIRED)
@@ -53,6 +57,8 @@ target_link_libraries(tracker_lib
 )
 
 ament_target_dependencies(tracker_lib
+  tf2_geometry_msgs
+  tf2_ros
   rclcpp
   sensor_msgs
   vision_msgs

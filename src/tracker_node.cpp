@@ -129,9 +129,42 @@ void TrackerNode::detectionCb(const vision_msgs::msg::Detection2DArray::ConstSha
         const double x = (u - cx0) * z / fx;
         const double y = (v - cy0) * z / fy;
 
+       RCLCPP_INFO(
+            get_logger(),
+            "x: %.3f, y: %.3f, z: %.3f",
+            x, y, z
+        );
+
+        geometry_msgs::msg::PointStamped cam_point, map_point;
+        cam_point.header.frame_id = "camera_link";
+        cam_point.header.stamp = msg->header.stamp;
+        cam_point.point.x = x;   // forward
+        cam_point.point.y = y;   // lateral
+        cam_point.point.z = z;  // height
+        
+
+        try {
+            tf_buffer_.transform(cam_point, map_point, "map");
+            RCLCPP_INFO(
+                get_logger(),
+                "map_point -> x: %.3f, y: %.3f, z: %.3f",
+                map_point.point.x,
+                map_point.point.y,
+                map_point.point.z
+            );
+
+        } catch (const tf2::TransformException& e) {
+            RCLCPP_WARN(get_logger(), "TF lookup failed: %s", e.what());
+            continue;
+        }
+
         DetectionMeasurement measurement;
-        measurement.pos = Eigen::Vector2d(z, x);   // [forward, lateral]
-        measurement.height = -y;
+        measurement.pos = Eigen::Vector2d(map_point.point.x, map_point.point.y);
+        measurement.height = map_point.point.z;
+
+        // DetectionMeasurement measurement;
+        // measurement.pos = Eigen::Vector2d(z, x);   // [forward, lateral]
+        // measurement.height = -y;
 
         const double sigma_forward = std::max(0.08, 1.4826 * mad + 0.01 * z);
         const double sigma_lateral = std::max(0.05, (z / std::max(fx, 1.0)) * 3.0 + 0.25 * sigma_forward);
@@ -154,8 +187,8 @@ void TrackerNode::detectionCb(const vision_msgs::msg::Detection2DArray::ConstSha
 
     const auto result = tracker_.step(measurements, dt);
     const std::string frame_id = resolveFrameId(msg->header.frame_id);
-    publishMarkers(result.obstacles, frame_id);
-    publishDeleteMarkers(result.dead_ids, frame_id);
+    publishMarkers(result.obstacles, "map");
+    publishDeleteMarkers(result.dead_ids, "map");
 }
 
 void TrackerNode::publishMarkers(const std::vector<Obstacle>& obstacles,
@@ -184,7 +217,7 @@ void TrackerNode::publishMarkers(const std::vector<Obstacle>& obstacles,
             geometry_msgs::msg::Point pt;
             pt.x = p.x();
             pt.y = p.y();
-            pt.z = p.z();
+            pt.z = 0.0;
             history.points.push_back(pt);
         }
         array.markers.push_back(history);
@@ -198,7 +231,7 @@ void TrackerNode::publishMarkers(const std::vector<Obstacle>& obstacles,
         current.action = visualization_msgs::msg::Marker::ADD;
         current.pose.position.x = ob.position.x();
         current.pose.position.y = ob.position.y();
-        current.pose.position.z = ob.position.z();
+        current.pose.position.z = 0.0;
         current.pose.orientation.w = 1.0;
         current.scale.x = 0.12;
         current.scale.y = 0.12;
@@ -225,7 +258,7 @@ void TrackerNode::publishMarkers(const std::vector<Obstacle>& obstacles,
             geometry_msgs::msg::Point pt;
             pt.x = p.position.x();
             pt.y = p.position.y();
-            pt.z = p.position.z();
+            pt.z = 0.0;
             pred.points.push_back(pt);
         }
         array.markers.push_back(pred);

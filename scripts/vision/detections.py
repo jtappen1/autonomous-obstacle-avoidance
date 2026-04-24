@@ -22,8 +22,8 @@ class Detections(Node):
         self.model = YOLO('/home/nvidia/ros2_ws/src/final_project/models/yolo26n_fast_fp16.engine')
 
     def rgb_cb(self, msg):
-        frame = self.bridge.imgmsg_to_cv2(msg, "bgr8")
-        results = self.model(frame, verbose=False, classes=[0], imgsz=(640, 480))
+        frame = self.bridge.imgmsg_to_cv2(msg, "rgb8")
+        results = results = self.model(frame, verbose=False, classes=[0], imgsz=(640, 480), device=0)
         
         array_msg = Detection2DArray()
         array_msg.header = msg.header  # preserve original timestamp

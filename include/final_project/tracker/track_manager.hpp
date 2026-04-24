@@ -81,10 +81,11 @@ private:
     double std_yawdd_ = 1.0;
     double gating_threshold_ = 5.991;   // chi-square 95% for 2 DoF
     double unassigned_cost_ = 1e6;
-    int min_confirmed_hits_ = 3;
-    int max_missed_ = 10;
+    int min_confirmed_hits_ = 25;
+    int max_missed_ = 45;
     int max_history_ = 60;
     int num_predicted_steps_ = 30;
+    double min_spawn_distance_ = 1.0;
 };
 
 }  // namespace final_project::tracker
