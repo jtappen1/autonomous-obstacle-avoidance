@@ -149,11 +149,15 @@ ClusterCandidate buildClusterCandidate(
 
     // CHANGED:
     // Use closeness to bbox center as a CLUSTER score, not direct point weights for centroid.
+    // const double half_w = std::max(0.5 * bbox_w, 1.0);
+    // const double half_h = std::max(0.5 * bbox_h, 1.0);
+    // const double du = (c.median_u - bbox_u) / half_w;
+    // const double dv = (c.median_v - bbox_v) / half_h;
+    // const double center_penalty = du * du + dv * dv;
+
     const double half_w = std::max(0.5 * bbox_w, 1.0);
-    const double half_h = std::max(0.5 * bbox_h, 1.0);
     const double du = (c.median_u - bbox_u) / half_w;
-    const double dv = (c.median_v - bbox_v) / half_h;
-    const double center_penalty = du * du + dv * dv;
+    const double center_penalty = du * du;
 
     // CHANGED: prefer front-most plausible cluster, but reward support count.
     const double count_bonus = 0.1 * std::min(c.count, 20);
@@ -226,11 +230,6 @@ TrackerNode::TrackerNode()
 
 void TrackerNode::infoCb(const sensor_msgs::msg::CameraInfo::ConstSharedPtr& msg) {
     intrinsics_ = Intrinsics{msg->k[0], msg->k[4], msg->k[2], msg->k[5]};
-
-    // TODO: Remove this, not needed.  Keep it static for now
-    if (!msg->header.frame_id.empty()) {
-        camera_frame_ = msg->header.frame_id;
-    }
 }
 
 void TrackerNode::fusedCb(
@@ -439,27 +438,23 @@ void TrackerNode::fusedCb(
         // Strict bounding box limits to reduce background noise
         const double x_min = bbox_u - 0.5 * bbox_w;
         const double x_max = bbox_u + 0.5 * bbox_w;
-        const double y_min = bbox_v - 0.5 * bbox_h;
-        const double y_max = bbox_v + 0.5 * bbox_h;
+        
         std::vector<ProjectedLidarPoint> in_bbox;
         in_bbox.reserve(32);
 
         for (const auto& point : projected_points) {
-            if (point.u >= x_min && point.u <= x_max &&
-                point.v >= y_min && point.v <= y_max) {
+            if (point.u >= x_min && point.u <= x_max) {
                 in_bbox.push_back(point);
-
             }
-
         }
 
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
             "BBOX det[%zu]: center=(%.1f, %.1f)  size=(%.1f x %.1f)  "
-            "x_range=[%.1f, %.1f]  y_range=[%.1f, %.1f]  "
+            "x_range=[%.1f, %.1f]"
             "total_projected=%zu  in_bbox=%zu",
             &det - &det_msg->detections[0],
             bbox_u, bbox_v, bbox_w, bbox_h,
-            x_min, x_max, y_min, y_max,
+            x_min, x_max,
             projected_points.size(), in_bbox.size());
 
         if (in_bbox.empty()) {
