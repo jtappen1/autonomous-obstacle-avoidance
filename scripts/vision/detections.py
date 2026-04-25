@@ -19,7 +19,7 @@ class Detections(Node):
         self.bridge = CvBridge() 
         self.pub_detections = self.create_publisher(Detection2DArray, '/detector/detections', 10)
         self.create_subscription(Image, '/camera/camera/color/image_raw', self.rgb_cb, 10)
-        self.model = YOLO('/home/nvidia/ros2_ws/src/final_project/models/yolo26n_best_car_fp16.engine')
+        self.model = YOLO('/home/nvidia/ros2_ws/src/final_project/models/f1tenth_fp16.engine')
 
     def rgb_cb(self, msg):
         frame = self.bridge.imgmsg_to_cv2(msg, "rgb8")

@@ -103,6 +103,7 @@ install(PROGRAMS
   scripts/vision/detect3d.py
   scripts/vision/detections.py
   scripts/trackers/tracker.py
+  scripts/vision/detection_cv.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

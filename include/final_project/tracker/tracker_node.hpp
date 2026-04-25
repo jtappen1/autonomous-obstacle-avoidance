@@ -74,6 +74,8 @@ private:
     TrackManager2D tracker_;
     tf2_ros::Buffer tf_buffer_{get_clock()};
     tf2_ros::TransformListener tf_listener_{tf_buffer_};
+
+    std::string laser_frame_ = "laser";
 };
 
 }  // namespace final_project::tracker
