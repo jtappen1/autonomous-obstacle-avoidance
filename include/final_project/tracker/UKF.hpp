@@ -65,7 +65,7 @@ private:
     double std_a_ = 2.0;
     double std_yawdd_ = 1.0;
     double lambda_ = 3.0 - static_cast<double>(kAugDim);
-    double last_dt_ = 1.0 / 30.0;
+    double last_dt_ = 1.0 / 15.0;
 };
 
 }  // namespace final_project::tracker

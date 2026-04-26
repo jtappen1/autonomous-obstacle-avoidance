@@ -360,6 +360,11 @@ void TrackerNode::fusedCb(
             0.0);
         const tf2::Vector3 centroid_track = tf_scan_to_map * centroid_scan;
 
+        const double dist_from_lidar = best_cluster->centroid_scan.norm();
+        if (dist_from_lidar > max_distance_for_detection_) {
+            continue;
+        }
+
         DetectionMeasurement measurement;
         measurement.pos = Eigen::Vector2d(centroid_track.x(), centroid_track.y());
         measurement.height = 0.0;
@@ -370,7 +375,7 @@ void TrackerNode::fusedCb(
         R_track = 0.5 * (R_track + R_track.transpose());
         R_track.diagonal().array() += 1e-4;
         measurement.R = R_track;
-
+        
         measurements.push_back(measurement);
     }
 

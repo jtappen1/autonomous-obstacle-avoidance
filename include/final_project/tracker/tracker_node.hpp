@@ -67,6 +67,8 @@ private:
     const int img_cols_ = 640;
     const int img_rows_ = 480;
 
+    const double max_distance_for_detection_ = 4.0;
+
 
     TrackManager2D tracker_;
     tf2_ros::Buffer tf_buffer_{get_clock()};

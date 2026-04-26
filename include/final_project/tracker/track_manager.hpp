@@ -76,16 +76,16 @@ private:
     std::vector<Track> tracks_;
     int next_id_ = 0;
 
-    double default_dt_ = 1.0 / 30.0;
+    double default_dt_ = 1.0 / 15.0;
     double std_a_ = 2.0;
     double std_yawdd_ = 1.0;
     double gating_threshold_ = 5.991;   // chi-square 95% for 2 DoF
     double unassigned_cost_ = 1e6;
-    int min_confirmed_hits_ = 25;
-    int max_missed_ = 45;
-    int max_history_ = 60;
-    int num_predicted_steps_ = 30;
-    double min_spawn_distance_ = 1.0;
+    int min_confirmed_hits_ = 10;
+    int max_missed_ = 30;
+    int max_history_ = 30;
+    int num_predicted_steps_ = 5;
+    double min_spawn_distance_ = 2.0;
 };
 
 }  // namespace final_project::tracker

@@ -104,6 +104,7 @@ install(PROGRAMS
   scripts/vision/detections.py
   scripts/trackers/tracker.py
   scripts/vision/detection_cv.py
+  scripts/vision/fast_detections.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
