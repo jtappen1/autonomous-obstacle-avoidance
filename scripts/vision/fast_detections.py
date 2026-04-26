@@ -53,38 +53,48 @@ class DetectionsNode(Node):
             ret, frame = self.cap.read()
             if not ret:
                 continue
-            
+
+            # Stamp at the moment the frame was actually pulled, not at the
+            # moment YOLO inference finishes — downstream (tracker / planner)
+            # uses this for ApproximateTime sync with /scan and for vs/vd
+            # finite-difference. Tagging at inference time would smear by the
+            # YOLO latency (tens of ms) and bias velocity estimates.
+            stamp = self.get_clock().now().to_msg()
+
             # Keep only the freshest frame in the queue
             if self.frame_queue.full():
                 try:
                     self.frame_queue.get_nowait()
                 except queue.Empty:
                     pass
-            self.frame_queue.put(frame)
+            self.frame_queue.put((frame, stamp))
 
     def run_inference(self):
         """Main loop that pulls from the queue and runs YOLO."""
         while rclpy.ok():
             try:
                 # Wait for a frame with a timeout so we can check rclpy.ok()
-                frame = self.frame_queue.get(timeout=1.0)
+                frame, frame_stamp = self.frame_queue.get(timeout=1.0)
             except queue.Empty:
                 continue
 
-            # 4. Optimized Inference: 
+            # 4. Optimized Inference:
             # imgsz=640 (int) is faster; stream=True uses a generator for better memory management
             results = self.model.predict(
-                frame, 
-                verbose=False, 
-                classes=[0], 
-                imgsz=640, 
+                frame,
+                verbose=False,
+                classes=[0],
+                imgsz=640,
                 stream=True,
                 device=0
             )
 
             array_msg = Detection2DArray()
-            # Synchronize timestamp with the exact moment of inference
-            array_msg.header.stamp = self.get_clock().now().to_msg()
+            # Stamp = capture time of the frame (set in the reader thread).
+            # Inference latency must NOT inflate the stamp, otherwise the
+            # tracker's ApproximateTime sync with /scan and the overtake
+            # planner's vs/vd finite-difference both bias.
+            array_msg.header.stamp = frame_stamp
             array_msg.header.frame_id = "camera"
 
             for result in results:

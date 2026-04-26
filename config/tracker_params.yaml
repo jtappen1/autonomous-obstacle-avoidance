@@ -1,0 +1,40 @@
+# Reference parameter file for the tracker node.
+#
+# NOTE: tracker_node.cpp currently hard-codes these values in the header /
+# constructor; this file documents them so future versions can wire them up
+# via declare_parameter without surprises.
+
+tracker_node:
+  ros__parameters:
+
+    # ----------------------------------------------------------------------
+    # Frames (must match URDF / static TF and the MPC global_frame).
+    # ----------------------------------------------------------------------
+    map_frame: "map"
+    camera_frame: "camera_link"
+    scan_frame: "laser"
+
+    # ----------------------------------------------------------------------
+    # Pinhole intrinsics (RealSense D435 colour cam, factory default).
+    # Override if a different camera or calibration is used.
+    # ----------------------------------------------------------------------
+    fx: 608.489501953125
+    fy: 608.42236328125
+    cx: 312.7839050292969
+    cy: 245.48492431640625
+
+    # ----------------------------------------------------------------------
+    # Detection / cluster gating.
+    # max_distance_for_detection MUST be >= the MPC overtake planner's
+    # activation_lookahead (~7.0 m) so the planner sees obstacles before
+    # it has to commit to an overtake.
+    # ----------------------------------------------------------------------
+    max_distance_for_detection: 8.0
+
+    # ----------------------------------------------------------------------
+    # Outbound interface to the MPC overtake planner.
+    # The topic name is the default value of mpc_node's `obstacle_topic`
+    # parameter; keep them in sync if you ever rename it.
+    # ----------------------------------------------------------------------
+    obstacle_topic: "/overtake/tracked_obstacles"
+    obstacle_radius: 0.20         # metres, written into TrackedObstacle.radius

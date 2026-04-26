@@ -30,6 +30,7 @@ find_package(cv_bridge REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(message_filters REQUIRED)
+find_package(overtake_msgs REQUIRED)
 
 
 
@@ -67,6 +68,7 @@ ament_target_dependencies(tracker_lib
   visualization_msgs
   geometry_msgs
   cv_bridge
+  overtake_msgs
 )
 
 # ── Tracker node executable (only main.cpp) ───────────────────────────────────

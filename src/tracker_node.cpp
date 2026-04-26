@@ -12,6 +12,7 @@
 #include <tf2/LinearMath/Matrix3x3.h>
 #include <tf2/LinearMath/Transform.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <overtake_msgs/msg/tracked_obstacle.hpp>
 
 namespace final_project::tracker {
 
@@ -211,6 +212,11 @@ TrackerNode::TrackerNode()
     marker_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>(
         "/tracker/markers", 10);
 
+    // TrackedObstacleArray for the MPC overtake planner.
+    // Topic name matches mpc_node's default `obstacle_topic`.
+    obs_pub_ = create_publisher<overtake_msgs::msg::TrackedObstacleArray>(
+        "/overtake/tracked_obstacles", 10);
+
     RCLCPP_INFO(get_logger(), "TrackerNode initialized (LiDAR + detections)");
 }
 
@@ -392,6 +398,7 @@ void TrackerNode::fusedCb(
     const auto result = tracker_.step(measurements, dt);
     publishMarkers(result.obstacles, map_frame_);
     publishDeleteMarkers(result.dead_ids, map_frame_);
+    publishObstacles(result, stamp, map_frame_);
 }
 
 void TrackerNode::publishMarkers(const std::vector<Obstacle>& obstacles,
@@ -505,6 +512,45 @@ void TrackerNode::publishDeleteMarkers(const std::vector<int>& dead_ids,
     }
 
     marker_pub_->publish(array);
+}
+
+void TrackerNode::publishObstacles(const Step& step,
+                                   const rclcpp::Time& stamp,
+                                   const std::string& frame_id) {
+    overtake_msgs::msg::TrackedObstacleArray msg;
+    msg.header.stamp = stamp;
+    msg.header.frame_id = frame_id;
+
+    constexpr double kDefaultRadius = 0.20;
+
+    msg.obstacles.reserve(step.obstacles.size());
+    for (const auto& ob : step.obstacles) {
+        overtake_msgs::msg::TrackedObstacle t;
+        t.id = ob.id;
+        t.cls = static_cast<int32_t>(ob.obstacle_class);
+
+        t.pose.position.x = ob.position.x();
+        t.pose.position.y = ob.position.y();
+        t.pose.position.z = 0.0;
+
+        const double half_yaw = 0.5 * ob.yaw;
+        t.pose.orientation.x = 0.0;
+        t.pose.orientation.y = 0.0;
+        t.pose.orientation.z = std::sin(half_yaw);
+        t.pose.orientation.w = std::cos(half_yaw);
+
+        t.velocity.x = ob.velocity.x();
+        t.velocity.y = ob.velocity.y();
+        t.velocity.z = 0.0;
+
+        t.radius = static_cast<float>(kDefaultRadius);
+
+        msg.obstacles.push_back(t);
+    }
+
+    msg.dead_ids.assign(step.dead_ids.begin(), step.dead_ids.end());
+
+    obs_pub_->publish(msg);
 }
 
 }  // namespace final_project::tracker

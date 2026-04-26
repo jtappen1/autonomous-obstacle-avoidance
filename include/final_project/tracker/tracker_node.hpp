@@ -11,6 +11,7 @@
 #include <vision_msgs/msg/detection2_d_array.hpp>
 #include <visualization_msgs/msg/marker.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
+#include <overtake_msgs/msg/tracked_obstacle_array.hpp>
 
 #include <message_filters/subscriber.h>                       // CHANGED
 #include <message_filters/synchronizer.h>                    // CHANGED
@@ -44,6 +45,9 @@ private:
                         const std::string& frame_id);
     void publishDeleteMarkers(const std::vector<int>& dead_ids,
                               const std::string& frame_id);
+    void publishObstacles(const Step& step,
+                          const rclcpp::Time& stamp,
+                          const std::string& frame_id);
 
     // ApproximateTime sync policy for camera detections and LiDAR.
     using SyncPolicy = message_filters::sync_policies::ApproximateTime<
@@ -57,6 +61,7 @@ private:
     std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> sync_;
 
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
+    rclcpp::Publisher<overtake_msgs::msg::TrackedObstacleArray>::SharedPtr obs_pub_;
 
     Intrinsics intrinsics_;
     std::optional<rclcpp::Time> last_update_stamp_;
@@ -67,7 +72,9 @@ private:
     const int img_cols_ = 640;
     const int img_rows_ = 480;
 
-    const double max_distance_for_detection_ = 4.0;
+    // Must be >= MPC overtake activation_lookahead (~7.0 m) so the planner
+    // sees obstacles before it has to react.
+    const double max_distance_for_detection_ = 8.0;
 
 
     TrackManager2D tracker_;
